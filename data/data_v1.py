@@ -14,20 +14,22 @@ class luna16Dataset(data.Dataset):
 
     def __init__(self, 
                  mode='train',
+                 root_dir='D:\Work_file\det'
          
                  ):
   
 
         super(luna16Dataset, self).__init__()
         self.mode=mode
+        self.root_dir=root_dir
         self.setup()
 
     def __getitem__(self, index):
 
         name = self.names[index]
-        time_1 = time()
-        dict = resize_data(name, new_shape=(514, 514, 277))
-        print('image_crop : {}'.format(time() - time_1))
+        # time_1 = time()
+        dict = resize_data(name, self.root_dir, new_shape=(512, 512, 256))
+        # print('image_crop : {}'.format(time() - time_1))
 
         return dict
     
@@ -37,10 +39,13 @@ class luna16Dataset(data.Dataset):
         return len(self.names)
         
     def setup(self):
+        print('set up ')
         self.names = []
-        file_path = 'D:\\Work_file\\det_LUNA16_data\\annotations_pathcoord.csv'
+        file_path = 'D:\Work_file\det_LUNA16_data\\AT_afterlungcrop.csv'
         names = read_names_from_csv(file_path)  
-        np.random.shuffle(names)
+        random.seed(0)
+        if self.mode == 'train':
+            np.random.shuffle(names)    
         train_names = names[ : int(len(names) * 0.7)]
         valid_names = names[int(len(names) * 0.7) : int(len(names) * 0.8)]
         test_names = names[int(len(names) * 0.8) : ]
@@ -51,6 +56,7 @@ class luna16Dataset(data.Dataset):
             self.names = test_names
         else:
             self.names = train_names
+        # embed()
 
     
 

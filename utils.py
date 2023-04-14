@@ -11,6 +11,7 @@ import pyvista as pv
 import torch
 import random
 import torch.nn.functional as F 
+import torch.nn as nn
 from time import time
 
 
@@ -26,6 +27,7 @@ def get_mhd_files(path):
                     mhd_files.append({'name': filename, 'path': os.path.join(subset_path, file)})
     return mhd_files
 
+
 def find_the_orientation(mhd_files):
     for i in range(len(mhd_files)):
         name = mhd_files[i]['name']
@@ -38,9 +40,7 @@ def find_the_orientation(mhd_files):
     return print('over')
 
 
-
-
-def _map_data(data, max, min):
+def _map_data(data):
     '''
     data: the data to map
     max : map to the max
@@ -48,9 +48,10 @@ def _map_data(data, max, min):
     '''
     data_max = data.max()
     data_min = data.min()
-
-    data = min + (max - min) / (data_max - data_min) * (data - data_min)
+    data = (data - data_min + 1e-6) / (data_max - data_min + 1e-6) 
+    # data = min + (max - min) / (data_max - data_min) * (data - data_min)
     return data
+
 
 def generate_heatmap(name, save=None, save_nii=None):
     # 从csv文件中读取数据
@@ -72,14 +73,14 @@ def generate_heatmap(name, save=None, save_nii=None):
         diameter = row['diameter_mm']
         # 将坐标转换为整数
         x, y, z = int(x), int(y), int(z)
-        # embed()
+        
         # 计算高斯衰减的范围
         radius = int(diameter / 2)
         # 在heatmap上进行高斯衰减
         anchor = np.zeros((2 * radius + 1, 2 * radius + 1, 2 * radius + 1), dtype=np.float32)
         anchor[int(radius)][int(radius)][int(radius)] = 1
         anchor_hm = gaussian_filter(anchor, sigma=(2, 2, 2))
-        anchor_hm = _map_data(anchor_hm, max=1, min=1e-4)
+        anchor_hm = _map_data(anchor_hm)
         heatmap[int(x) - radius - 1 : int(x) + radius, 
                 int(y) - radius - 1 : int(y) + radius, 
                 int(z) - radius - 1 : int(z) + radius] += anchor_hm[:, :, :]
@@ -99,20 +100,25 @@ def generate_heatmap(name, save=None, save_nii=None):
     return heatmap
 
 
-def find_name_in_csv(mhd_name):
+def name2coord(mhd_name, root_dir='D:\\Work_file\\det_LUNA16_data'):
     # * 输入name，输出这个name所对应着的gt坐标信息
     result = []
-    csv_file_dir = 'D:\\Work_file\\det_LUNA16_data\\annotations_pathcoord.csv'
+    # csv_file_dir = 'D:\\Work_file\\det_LUNA16_data\\annotations_pathcoord.csv'
+    csv_file_dir = os.path.join(root_dir, 'AT_afterlungcrop.csv')
     with open(csv_file_dir, 'r') as file:
         reader = csv.reader(file)
         for row in reader:
-            # embed()
+            
             if row[0] == mhd_name:
                 x = float(row[2])
                 y = float(row[3])
                 z = float(row[4])
-                radius = float(row[5])
-                result.append((x, y, z, radius))
+                # radius = float(row[5])
+                # result.append((x, y, z, radius))
+                w = float(row[5])
+                h = float(row[6])
+                d = float(row[7])
+                result.append((x, y, z, w, h, d))
     return result
 
 
@@ -121,8 +127,6 @@ def read_names_from_csv(file_path):
         reader = csv.reader(file)
         names = [row[0] for row in reader]
     return list(set(names))
-
-
 
 
 # * to get the W H D map very preprocess data 
@@ -135,7 +139,7 @@ def get_WHD_offset_mask(name, whd=None, offset=None, mask=None):
 
     coords = df[['coordX','coordY','coordZ']].values
     diameter_mm = df[['diameter_mm']].values
-    # embed()
+    
     mhd_path = str(df[['path']].values[0])[2:-2]
 
     data_npy_dir = 'D:\\Work_file\\det\\npy_data\\{}_image.npy'.format(name)
@@ -159,7 +163,7 @@ def get_WHD_offset_mask(name, whd=None, offset=None, mask=None):
     if whd == True:
         for i in range(len(coords)):
             coord_int = coords[i].astype(np.int32)
-            # embed()
+            
             # w_image[coord_int] = coords[i]
             w_image[(coord_int[0]-1, coord_int[1]-1, coord_int[2]-1)] = diameter_mm[i] / 2
             h_image[(coord_int[0]-1, coord_int[1]-1, coord_int[2]-1)] = diameter_mm[i] / 2
@@ -205,10 +209,10 @@ def crop_data(name):
     else:
         csv_path = 'D:\\Work_file\\det_LUNA16_data\\annotations_pathcoord.csv'
         data = pd.read_csv(csv_path)
-        # embed()
+        
         data = data[data['seriesuid'] == name]
         mhd_path = data['path'].iloc[0]
-        # embed()
+        
         image = tio.ScalarImage(mhd_path)
         image_data = image.data[0, :, :, :]
 
@@ -244,7 +248,7 @@ def crop_data(name):
         mask_data = get_WHD_offset_mask(name, mask=True)['mask']
         print('mask_data_generate : {}'.format(time() - time_mask))
 
-    coords = find_name_in_csv(name)
+    coords = name2coord(name)
     x, y, z = image_data.shape[:]
 
     if x < 128 or y < 128 or z < 128:
@@ -290,14 +294,14 @@ def crop_data(name):
     mask_crop = mask_data[x_start : x_start + 128,
                           y_start : y_start + 128,
                           z_start : z_start + 128]
-    # embed()
+    
     image_crop = image_crop.type(torch.float32)
     hmap_crop = torch.from_numpy(hmap_crop).type(torch.float32)
     whd_crop = torch.from_numpy(whd_crop).type(torch.float32)
     offset_crop = torch.from_numpy(offset_crop).type(torch.float32)
     mask_crop = torch.from_numpy(mask_crop).type(torch.float32)
     # return image_crop, hmap_crop, bbox_crop
-    # embed()
+    
     return image_crop, hmap_crop, whd_crop, offset_crop, mask_crop
 
 
@@ -392,18 +396,15 @@ def get_segmented_lungs(im, plot=False):
         plots[7].imshow(im, cmap=plt.cm.bone)
  
     plt.show()
-
-
- 
     return im
  
  
-
-def npy2nii(name, image_npy, suffix='', resample=None, affine=''):
-    csv_dir = 'D:\\Work_file\\det_LUNA16_data\\annotations_pathcoord.csv'
+def npy2nii(name, image_npy, root_dir='D:\Work_file\det', suffix='', resample=None, affine=''):
+    # csv_dir = 'D:\\Work_file\\det_LUNA16_data\\annotations_athcoord.csv'
+    csv_dir = os.path.join(root_dir, 'annotations_pathcoord.csv')
     df = pd.read_csv(csv_dir)
     df = df[df['seriesuid'] == name]
-    # embed()
+    
     mhd_path = str(df[['path']].values[0])[2:-2]
     image = tio.ScalarImage(mhd_path)
     if resample != None:
@@ -411,35 +412,37 @@ def npy2nii(name, image_npy, suffix='', resample=None, affine=''):
             print("affine isn't be given")
     else:
         affine = image.affine
-    # embed()
+    
     if isinstance(image_npy, np.ndarray):
         image_npy = torch.from_numpy(image_npy)
     if len(image_npy.shape) == 3:
         # image_npy = torch.from_numpy(image_npy)
         image_nii = tio.ScalarImage(tensor=image_npy.unsqueeze(0), affine=affine)
-        image_nii.save('./nii_temp/{}_{}.nii'.format(name, suffix))
+        image_nii.save('./nii_temp/{}_{}.nii.gz'.format(name, suffix))
     elif len(image_npy.shape) == 4:
         # image_npy = torch.from_numpy(image_npy)
         image_nii = tio.ScalarImage(tensor=image_npy, affine=affine)
-        image_nii.save('./nii_temp/{}_{}.nii'.format(name, suffix))
+        image_nii.save('./nii_temp/{}_{}.nii.gz'.format(name, suffix))
     else: 
         print('DIM ERROR : npy.dim != 3 or 4')
 
     # image_nii.save('./nii_temp/{}_image.nii'.format(name))
-    return print('save done')
+    # return print('save done')
 
 
-def name2path(name):
-    # * the resampled image
-    csv_dir = 'D:\\Work_file\\det_LUNA16_data\\annotations_pathcoord.csv'
+def name2path(name, root_dir='D:\Work_file\det_LUNA16_data'):
+    # * the resampled image 'D:\\Work_file\\det_LUNA16_data\\annotations_pathcoord.csv'
+    csv_dir = os.path.join(root_dir, 'AT_afterlungcrop.csv')
     df = pd.read_csv(csv_dir)
+    
     df = df[df['seriesuid'] == name]
+    # embed()
+    # print(df)
     mhd_path = str(df[['path']].values[0])[2:-2]
     return mhd_path
 
 
-
-def seg_3d(name, forsee=None):
+def seg_3d_name(name, root_dir, forsee=None):
 
     mhd_path = name2path(name)
     image_nii = tio.ScalarImage(mhd_path)
@@ -449,15 +452,25 @@ def seg_3d(name, forsee=None):
         im = get_segmented_lungs(data[:,:,i])
         data[:,:,i] = im
     if forsee != None:
+        
         npy2nii(name, data, suffix='seg')
     return data
 
-    
+def seg_3d_image(image_nii, forsee=None):
 
-def resize_data(name, new_shape=(514, 514, 277)):
+    data = np.array(image_nii.data[0, :, :, :])
+    affine = image_nii.affine
+    for i in range(image_nii.shape[3]):
+        im = get_segmented_lungs(data[:,:,i])
+        data[:,:,i] = im
+    if forsee != None:
+        npy2nii(name, data, suffix='seg', resample=True, affine=affine)
+    return data
+
+def resize_data(name, root_dir, new_shape=(512, 512, 256)):
     # time_1 = time()
     path = name2path(name)
-    coords = find_name_in_csv(name)
+    coords = name2coord(name)
     image = tio.ScalarImage(path)
     scale = np.array(new_shape) / np.array(image.shape[1:])
     new_spacing = (np.array(image.spacing) * np.array(new_shape)) / np.array(image.shape[1:])
@@ -465,9 +478,10 @@ def resize_data(name, new_shape=(514, 514, 277)):
     new_coords = []
     new_whd = []
     for coord in coords:
-        new_coords.append(coord[: -1] * scale)
-        new_whd.append((coord[-1], coord[-1], coord[-1]) * scale)
-    # embed()
+        new_coords.append(coord[: 3] * scale)
+        # new_whd.append((coord[-1], coord[-1], coord[-1]) * scale)
+        new_whd.append((coord[3 :]) * scale)
+    
     
     # create the 1.mask and 2.whd and 3.offset and the 4.image
     mask = create_mask(new_coords, new_shape) # 0.0s no save is so fast
@@ -477,19 +491,22 @@ def resize_data(name, new_shape=(514, 514, 277)):
     # npy2nii(name, whd, suffix='whd', resample=True, affine=new_affine)
     # npy2nii(name, offset, suffix='offset', resample=True, affine=new_affine)
     
-    hmap_dir = 'D:\Work_file\det\\npy_data\\{}_hmap.npy'.format(name)
+    # hmap_dir = 'D:\Work_file\det\\npy_data\\{}_hmap.npy'.format(name)
+    hmap_dir = os.path.join(root_dir, 'npy_data', '{}_hmap.npy'.format(name))
+    # hmap_dir = '/public_bme/data/xiongjl/npy_data/{}_hmap.npy'.format(name)
     if os.path.isfile(hmap_dir):
         hmap = np.load(hmap_dir)
     else:
-        hmap = create_hmap(coordinates=new_coords, shape=new_shape, save=True, name=name)
+        # hmap = create_hmap(coordinates=new_coords, shape=new_shape, save=True, hmap_dir=hmap_dir)
+        hmap = generate_heatmap_ing(coordinates=new_coords, shape=new_shape, whd=new_whd, reduce=4, save=None, hmap_dir=hmap_dir)
     # npy2nii(name, hmap, suffix='hmap', resample=True, affine=new_affine)
-    
-    input_data = seg_3d(name)
-    input_data = torch.from_numpy(input_data).unsqueeze(0).unsqueeze(0).float()
+    # input_data = seg_3d_name(name, root_dir)
+    # input_data = torch.from_numpy(input_data).unsqueeze(0).unsqueeze(0).float()
+    input_data = image.data.unsqueeze(0).float()
     input_resize = F.interpolate(input_data, size=new_shape).squeeze(0).squeeze(0).numpy()
     input_resize = (input_resize - input_data.numpy().min()) / (input_data.numpy().max() - input_data.numpy().min() + 1e-8)
     # npy2nii(name, input_resize, suffix='resize_image', resample=True, affine=new_affine)
-    # embed()
+    
     dict = {}
     dict['hmap'] = hmap
     dict['offset'] = offset
@@ -499,33 +516,44 @@ def resize_data(name, new_shape=(514, 514, 277)):
     return dict
 
 
-
-def create_mask(coordinates, shape, save=False, name=''):
-    arr = np.zeros(shape)
+def create_mask(coordinates, shape, reduce=4, save=False, name=''):
+    
+    arr = np.zeros(tuple(np.array(shape) // reduce)) 
     for coord in coordinates:
         x, y, z = coord
+        x = x / reduce
+        y = y / reduce
+        z = z / reduce 
         arr[int(x) - 1][int(y) - 1][int(z) - 1] = 1
     if save:
         np.save('D:\Work_file\det\\npy_data\\{}_mask.npy'.format(name), arr)
+    
     return arr
 
-
-def create_whd(coordinates, whd, shape, save=False):
-    arr = np.zeros((3,) + shape)
+def create_whd(coordinates, whd, shape, reduce=4, save=False):
+    
+    arr = np.zeros(tuple(np.insert(np.array(shape) // reduce, 0, 3)))
     for i in range(len(coordinates)):
         x, y, z = coordinates[i]
+        x = x / reduce
+        y = y / reduce
+        z = z / reduce 
         arr[0][int(x) - 1][int(y) - 1][int(z) - 1] = whd[i][0]
         arr[1][int(x) - 1][int(y) - 1][int(z) - 1] = whd[i][1]
         arr[2][int(x) - 1][int(y) - 1][int(z) - 1] = whd[i][2]
     if save:
         np.save('array.npy', arr)
+    
     return arr
 
 
-def create_offset(coordinates, shape, save=False):
-    arr = np.zeros((3,) + shape)
+def create_offset(coordinates, shape, reduce=4, save=False):
+    arr = np.zeros(tuple(np.insert(np.array(shape) // reduce, 0, 3)))
     for coord in coordinates:
         x, y, z = coord
+        x = x / reduce
+        y = y / reduce
+        z = z / reduce 
         arr[0][int(x) - 1][int(y) - 1][int(z) - 1] = x - int(x)
         arr[1][int(x) - 1][int(y) - 1][int(z) - 1] = y - int(y)
         arr[2][int(x) - 1][int(y) - 1][int(z) - 1] = z - int(z)
@@ -534,93 +562,315 @@ def create_offset(coordinates, shape, save=False):
     return arr
 
 # * load time is 0.09s
-def create_hmap(coordinates, shape, save=None, name=''): # 1.37s, if save :4.33s
-    arr = np.zeros(shape)
+def create_hmap(coordinates, shape, reduce=4, save=None, hmap_dir=''): # 1.37s, if save :4.33s
+    arr = np.zeros(tuple(np.array(shape) // reduce))
     for coord in coordinates:
         x, y, z = coord
+        x = x / reduce
+        y = y / reduce
+        z = z / reduce
         arr[int(x) - 1][int(y) - 1][int(z) - 1] = 1
     # time_si = time()
     arr = gaussian_filter(arr, sigma=2)
     # print('time of si is {}'.format(time() - time_si))
     arr = (arr - arr.min()) / (arr.max() - arr.min())
     if save != None:
-        np.save('D:\Work_file\det\\npy_data\\{}_hmap.npy'.format(name), arr)
+        np.save(hmap_dir, arr)
+        # np.save('/public_bme/data/xiongjl/npy_data/{}_hmap.npy'.format(name), arr)
+    return arr
+
+def gaussian_radius(det_size, min_overlap=0.7):
+#   embed()
+  depth, height, width = det_size
+
+  a1  = 1
+  b1  = (height + width + depth)
+  c1  = width * height * depth * (1 - min_overlap) / (1 + min_overlap)
+  sq1 = np.sqrt(b1 ** 2 - 4 * a1 * c1)
+  r1  = (b1 + sq1) / 2
+
+  a2  = 4
+  b2  = 2 * (height + width + depth)
+  c2  = (1 - min_overlap) * width * height * depth
+#   embed()
+  if (b2 ** 2 - 4 * a2 * c2) <0:
+      r2 = 10e6
+  else:
+    sq2 = np.sqrt(b2 ** 2 - 4 * a2 * c2)
+    r2  = (b2 + sq2) / 2
+
+  a3  = 4 * min_overlap
+  b3  = -2 * min_overlap * (height + width + depth)
+  c3  = (min_overlap - 1) * width * height * depth
+  sq3 = np.sqrt(b3 ** 2 - 4 * a3 * c3)
+  r3  = (b3 + sq3) / 2
+  return min(r1, r2, r3)
+
+
+def generate_heatmap_ing(coordinates, shape, whd, reduce=4, save=None, hmap_dir=''):
+    arr = np.zeros(tuple(np.array(shape) // reduce))
+
+    for i in range(len(whd)):
+        x, y, z = coordinates[i][0], coordinates[i][1], coordinates[i][2]
+        w, h, d = whd[i][0], whd[i][1], whd[i][2]
+        # 将坐标转换为整数
+        x, y, z = int(x), int(y), int(z)
+        x = x / reduce
+        y = y / reduce
+        z = z / reduce
+        w = w / reduce
+        h = h / reduce
+        d = d / reduce
+        # 计算高斯衰减的范围
+        radius = gaussian_radius((w, h, d))
+        radius = int(radius)
+        if radius == 0:
+            radius = 1
+        
+        # 在heatmap上进行高斯衰减
+        anchor = np.zeros((2 * radius + 1, 2 * radius + 1, 2 * radius + 1), dtype=np.float32)
+        anchor[int(radius)][int(radius)][int(radius)] = 1
+        anchor_hm = gaussian_filter(anchor, sigma=(radius/3, radius/3, radius/3))
+        anchor_hm = _map_data(anchor_hm)
+        # print()
+        # try:
+        #     ...
+        # except ValueError as e:
+        #     print(e)
+        # embed()
+        # print(f'arr_shape: {arr.shape}, and the x, y, z is {x}, {y}, {z}, the radius is {radius}')
+        # print(f"anchor_hm.shape: {anchor_hm.shape}, arr.shape: {arr[int(x) - radius - 1 : int(x) + radius,int(y) - radius - 1 : int(y) + radius, int(z) - radius - 1 : int(z) + radius].shape}")
+        # print('===================================')
+        arr[max(0, int(x) - radius - 1) : min(arr.shape[0], int(x) + radius), 
+            max(0, int(y) - radius - 1) : min(arr.shape[1], int(y) + radius), 
+            max(0, int(z) - radius - 1) : min(arr.shape[2], int(z) + radius)] \
+        += anchor_hm[max(0, -(int(x) - radius - 1)): min(anchor_hm.shape[0], arr.shape[0] - (int(x) - radius - 1)),
+                     max(0, -(int(y) - radius - 1)): min(anchor_hm.shape[1], arr.shape[1] - (int(y) - radius - 1)), 
+                     max(0, -(int(z) - radius - 1)): min(anchor_hm.shape[2], arr.shape[2] - (int(z) - radius - 1))]
+    
+    if save != None:
+        np.save(hmap_dir, arr)
+        # np.save('D:\\Work_file\\det\\npy_data\\{}_image.npy'.format(name), image.data[0, :, :, :])
+
     return arr
 
 
 
-if __name__ == '__main__':
-#     # filename = 'D:\Work_file\det_LUNA16_data\subset2\\1.3.6.1.4.1.14519.5.2.1.6279.6001.964952370561266624992539111877.mhd'
-#     # # itkimage = sitk.ReadImage(filename)  # 读取.mhd文件
-#     # # numpyImage = sitk.GetArrayFromImage(itkimage)  # 获取数据，自动从同名的.raw文件读取
-#     # image_nii = tio.ScalarImage(filename)
-#     # im = image_nii.data[0, :, :, :]
-#     # im = np.array(im)
-#     # # embed()
-#     # # data = numpyImage[50]
-#     # # data = numpyImage
-#     # plt.figure(300)
-#     # plt.imshow(im[:, :, 100], cmap='gray')
-#     # name = '1.3.6.1.4.1.14519.5.2.1.6279.6001.964952370561266624992539111877'
-    name = '1.3.6.1.4.1.14519.5.2.1.6279.6001.100953483028192176989979435275'
-    new_coords = resize_data(name, new_shape=(514, 514, 277))
-    embed()
-#     # im = get_segmented_lungs(im[:, :, 100], plot=True)
-#     # # npy2nii(name, im)
-#     # plt.figure(200)
-#     # data = mask_seg_3d(name, forsee=True)
-#     # plt.imshow(im, cmap='gray')
-#     # plt.show()
-#     # time_load = time()
-#     # npy = np.load('D:\Work_file\det\\npy_data\\1.3.6.1.4.1.14519.5.2.1.6279.6001.106379658920626694402549886949_hmap.npy')
-#     # print('load time is {}'.format(time() - time_load))
 
 
-
-#     new_coords = resize_coords(name, new_shape=(514, 514, 277))
-    # embed()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# if __name__ == '__main__':
-
-    # mhd_files = get_mhd_files('D:\Work_file\det_LUNA16_data')
-#     example_path = mhd_files[0]['path']
-    # find_the_orientation(mhd_files)
-#     # min_shape, min_name = get_min_shape_with_torchio(mhd_files)
-#     mhd_path = 'D:\Work_file\det_LUNA16_data\subset8\\1.3.6.1.4.1.14519.5.2.1.6279.6001.997611074084993415992563148335.mhd'
+def downsample_3d_array(input_array, factor):
+    # Ensure that the downsampling factor is an integer
+    factor = int(factor)
     
-    # name = '1.3.6.1.4.1.14519.5.2.1.6279.6001.997611074084993415992563148335'
-    # image_npy = np.load('D:\Work_file\det\\npy_data\\1.3.6.1.4.1.14519.5.2.1.6279.6001.997611074084993415992563148335_image.npy')
+    # Convert the input array to a PyTorch tensor
+    input_tensor = torch.tensor(input_array)
+    
+    # Add two extra dimensions to the input tensor to represent the batch size and the number of channels
+    input_tensor = input_tensor.unsqueeze(0).unsqueeze(0)
+    
+    # Define the size of the pooling window
+    pool_size = (1, factor, factor)
+    
+    # Apply max pooling to downsample the input tensor
+    downsampled_tensor = F.max_pool3d(input_tensor, kernel_size=pool_size)
+    
+    # Remove the extra dimensions from the downsampled tensor
+    downsampled_tensor = downsampled_tensor.squeeze(0).squeeze(0)
+    
+    # Convert the downsampled tensor to a NumPy array
+    downsampled_array = downsampled_tensor.numpy()
+    
+    return downsampled_array
 
-    # npy2nii(name, image_npy)
-#     name = 'D:\Work_file\det_LUNA16_data\subset2\\1.3.6.1.4.1.14519.5.2.1.6279.6001.964952370561266624992539111877.mhd'
-#     image_a = tio.ScalarImage(mhd_path)
-#     image_b = tio.ScalarImage(name)
-#     result = find_name_in_csv(mhd_name)
-#     heatmap = generate_heatmap(mhd_name, save=True)
-#     # visualize_3d(heatmap)
-#     print(result)
+def focal_loss(preds, targets, weight=4):
+    ''' Modified focal loss. Exactly the same as CornerNet.
+        Runs faster and costs a little bit more memory
+        Arguments:
+        preds (B x c x h x w x d)
+        gt_regr (B x c x h x w x d)
+    '''
+    pos_inds = targets.eq(1).float()
+    neg_inds = targets.lt(1).float()
+
+    neg_weights = torch.pow(1 - targets, weight)
+
+    loss = 0
+    for pred in preds:
+        pred = torch.clamp(torch.sigmoid(pred), min=1e-4, max=1 - 1e-4)
+        pos_loss = torch.log(pred) * torch.pow(1 - pred, 2) * pos_inds
+        neg_loss = torch.log(1 - pred) * torch.pow(pred, 2) * neg_weights * neg_inds
+
+        num_pos = pos_inds.float().sum()
+        pos_loss = pos_loss.sum()
+        neg_loss = neg_loss.sum()
+
+    if num_pos == 0:
+        loss = loss - neg_loss
+    else:
+        loss = loss - (pos_loss + neg_loss) / num_pos
+    return loss / len(preds)
+
+def reg_l1_loss(pred, target, mask):
+    #--------------------------------#
+    #   计算l1_loss
+    #--------------------------------#
+    pred = pred.permute(0,2,3,4,1)
+    target = target.permute(0,2,3,4,1)
+    expand_mask = torch.unsqueeze(mask, -1).repeat(1, 1, 1, 1, 3)
+    
+    loss = F.l1_loss(pred * expand_mask, target * expand_mask, reduction='sum')
+    loss = loss / (mask.sum() + 1e-4)
+    return loss
+
+def nms(heat, kernel=3):
+    hmax = F.max_pool3d(heat, kernel, stride=1, padding=(kernel - 1) // 2)
+    keep = (hmax == heat).float()
+    return heat * keep
+
+def decode_bbox(pred_hms, pred_whs, pred_offsets, confidence, cuda):
+
+    pred_hms = nms(pred_hms)
+    b, c, output_h, output_w, output_d = pred_hms.shape
+    detects = []
+
+    for batch in range(b):
+
+        heat_map    = pred_hms[batch].permute(1, 2, 3, 0).view([-1, c])
+        pred_wh     = pred_whs[batch].permute(1, 2, 3, 0).view([-1, 2])
+        pred_offset = pred_offsets[batch].permute(1, 2, 3, 0).view([-1, 3])
+
+        zv, yv, xv  = torch.meshgrid(torch.arange(0, output_d), torch.arange(0, output_h), torch.arange(0, output_w))
+        xv, yv, zv= xv.flatten().float(), yv.flatten().float(), zv.flatten().float()
+        if cuda:
+            xv      = xv.cuda()
+            yv      = yv.cuda()
+
+        class_conf, class_pred  = torch.max(heat_map, dim = -1)
+        mask                    = class_conf > confidence
+
+        pred_wh_mask        = pred_wh[mask]
+        pred_offset_mask    = pred_offset[mask]
+        if len(pred_wh_mask) == 0:
+            detects.append([])
+            continue     
+        xv_mask = torch.unsqueeze(xv[mask] + pred_offset_mask[..., 0], -1)
+        yv_mask = torch.unsqueeze(yv[mask] + pred_offset_mask[..., 1], -1)
+        zv_mask = torch.unsqueeze(yv[mask] + pred_offset_mask[..., 2], -1)
+        
+        half_w, half_h, half_d = pred_wh_mask[..., 0:1] / 2, pred_wh_mask[..., 1:2] / 2, pred_wh_mask[..., 2:3] / 2
+
+        bboxes = torch.cat([xv_mask - half_w, yv_mask - half_h, zv_mask - half_d, xv_mask + half_w, yv_mask + half_h, zv_mask + half_d], dim=1)
+        bboxes[:, [0, 3]] /= output_w
+        bboxes[:, [1, 4]] /= output_h
+        bboxes[:, [2, 5]] /= output_d
+        
+        detect = torch.cat([bboxes, torch.unsqueeze(class_conf[mask],-1), torch.unsqueeze(class_pred[mask],-1).float()], dim=-1)
+        detects.append(detect)
+
+    return detects
 
 
-#     info_dict = get_WHD_offset_mask(mhd_name, whd=True, offset=True, mask=True)
-#     embed()
-#     print(mhd_files)
-#     file_path = 'D:\\Work_file\\det_LUNA16_data\\annotations_pathcoord.csv'
-#     names = read_names_from_csv(file_path)
 
-#     image_crop, hmap_crop, whd_crop, offset_crop, mask_crop = crop_data(mhd_name)
-#     embed()
-#     print(names)
+
+def resample_image_coord(name, new_spacing, forsee=None, root=''):
+
+    path = name2path(name)
+    coords = name2coord(name)[0]
+    coord = coords[0:3]
+    
+    w = coords[3] / 2
+    h = coords[3] / 2
+    d = coords[3] / 2
+    image = tio.ScalarImage(path)
+    resample = tio.Resample(new_spacing)
+    resampled_image = resample(image)
+    new_coord = np.array(image.spacing) * np.array(coord) / np.array(new_spacing)
+    new_whd = np.array(image.spacing) * np.array((w,h,d)) / np.array(new_spacing)
+    
+    if forsee == True:
+        if root == '':
+            print('ROOT ERROE: root not be given')
+        save_dir = os.path.join(root, 'nii_temp', '{}_resampled.nii.gz'.format(name))
+        resampled_image.save(save_dir)
+    return resampled_image, new_coord, new_whd, resampled_image.affine
+
+def get_lung_coordinates(data):
+    # 获取肺部区域的坐标
+    lung_coords = np.where(data != 0)
+    
+    # 计算肺部区域的坐标范围
+    lung_coord_range = [(np.min(coord), np.max(coord)) for coord in lung_coords]
+    
+    # 输出肺部区域的坐标范围
+    return lung_coord_range
+    # print(f'Lung coordinate range: x,y,z: {lung_coord_range}')
+
+def crop_lung(data):
+    # 获取肺部区域的坐标
+    data = np.asarray(data)
+    lung_coords = np.where(data != 0)
+    
+    # 计算肺部区域的坐标范围
+    lung_coord_range = [np.min(coord) for coord in lung_coords] + [np.max(coord) + 1 for coord in lung_coords]
+    
+    # 裁剪出肺部区域
+    cropped_lung = np.copy(data[lung_coord_range[0]:lung_coord_range[3], lung_coord_range[1]:lung_coord_range[4], lung_coord_range[2]:lung_coord_range[5]])
+    
+    # 输出裁剪后的肺部区域
+    return cropped_lung
+    # print(f'Cropped lung: {cropped_lung}')
+
+def write_to_csv(name, coordinates, dimensions):
+    x, y, z = coordinates
+    w, h, d = dimensions
+    new_csv_dir = 'D:\Work_file\det\\annotations_resmaple_segcrop.csv'
+    with open(new_csv_dir, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow([name, x, y, z, w, h, d])
+
+
+def save_cropsegimg():
+    csv_dir = 'D:\Work_file\det\\annotations_pathcoord.csv'
+    name_list = read_names_from_csv(csv_dir)
+    for name in tqdm(name_list):
+        new_spacing = (0.7, 0.7, 1.2)
+        resampled_image, new_coord, new_whd, affine = resample_image_coord(name, new_spacing, forsee=None, root='')
+        data = seg_3d_image(resampled_image, forsee=None)
+        # print(new_coord)
+        lung_coord_range = get_lung_coordinates(data)
+        
+        cropped_lung = crop_lung(data)
+        # the finish coord
+        crop_coord = np.array((new_coord[0] - lung_coord_range[0][0], new_coord[1] - lung_coord_range[1][0], new_coord[2] - lung_coord_range[2][0]))
+
+        save_dir = './nii_data_resample_seg_crop/{}_croplung.nii.gz'.format(name)
+        if os.path.isfile(save_dir):
+            pass
+        else:
+            npy2nii(name, cropped_lung, suffix='croplung', resample=True, affine=affine)
+        write_to_csv(name, crop_coord, new_whd)
+
+    return print('save done')
+
+
+
+
+
+if __name__ == '__main__':
+    name = '1.3.6.1.4.1.14519.5.2.1.6279.6001.173931884906244951746140865701'
+    # npy = np.load('D:\Work_file\det\\npy_data\\1.3.6.1.4.1.14519.5.2.1.6279.6001.173931884906244951746140865701_hmap.npy')
+    # save_cropsegimg()
+    root_dir = 'D:\Work_file\det'
+    
+    dict = resize_data(name, root_dir)
+    
+
+    # result = name2coord(name, 'D:\Work_file\det')
+
+    # coordinates = (100.23874, 90.3847, 80.2983467)
+    # shape = ((300, 290, 400))
+    # arr = create_mask(coordinates, shape, reduce=1, save=False, name='')
+
+
+
+

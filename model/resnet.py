@@ -322,7 +322,7 @@ class CenterNet(nn.Module):
         # print(f'after the backbone the output shape is {x.shape}')
         x = self.decoder(x)
         # embed()
-        # print(f'after the decoder the output shape is {x.shape}')
+        print(f'after the decoder the output shape is {x.shape}')
         
         return self.head(x)
 

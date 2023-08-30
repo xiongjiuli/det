@@ -13,13 +13,13 @@ import csv
 import torch.nn.functional as F
 import os
 from tqdm import tqdm
+import shutil
+from scipy.ndimage import gaussian_filter
 
-from model.SwinUNet import SwinTransformerSys3D
-from model.hourglass3d_v1 import Hourglass
-from model.hourglass3d_meilan import get_hourglass
+# from model.swin_unet_v1 import SwinTransformerSys3D
 from model.swinunet3d_v1 import swinUnet_p_3D
 
-
+#* the test is for window crop for a image
 
 
 def npy2nii(name, image_npy, suffix=''):
@@ -201,9 +201,11 @@ def sliding_window_3d_volume_padded(arr, patch_size, stride, padding_value=0):
     patch_size_x = patch_size[0]
     patch_size_y = patch_size[1]
     patch_size_z = patch_size[2]
+
     stride_x = stride[0]
     stride_y = stride[1]
     stride_z = stride[2]
+
     # Compute the padding size for each dimension
     pad_size_x = (patch_size_x - (arr.shape[0] % patch_size_x)) % patch_size_x
     pad_size_y = (patch_size_y - (arr.shape[1] % patch_size_y)) % patch_size_y
@@ -231,32 +233,34 @@ def sliding_window_3d_volume_padded(arr, patch_size, stride, padding_value=0):
     return patches
 
 
-def test_crop(model_path, patch_size, overlap=15, confidence=0.15, iou_threshold=0.01):
+
+def test_crop(model_path, patch_size, overlap, train_data, confidence):
 
     test_names = []
-    with open('D:\Work_file\det\csv_file\\test_names_server.csv') as csv_file:
+    if train_data == True:
+        filename = 'train_test_names.csv'
+        det_file = 'train_'
+    else:
+        filename = 'test_names.csv'
+        det_file = ''
+    with open(f'/public_bme/data/xiongjl/det/csv_file/{filename}') as csv_file:
         reader = csv.reader(csv_file)
         next(reader)
         for row in reader:
-            # print(row)
             test_names.append(row[0])
 
+    model = CenterNet('resnet101', 1)
     # model = CenterNet('resnet101', 1)
-    # model = CenterNet('resnet101', 1)
-    # model = SwinTransformerSys3D()
+    # model = SwinTransformerSys3D(num_classes=64)
     # model = Hourglass()
     # model = get_hourglass['large_hourglass']
 
-
-    #* the swinunet3d config
-    x = torch.randn((1, 1, 224, 224, 160))
-    window_size = [i // 32 for i in x.shape[2:]]
-    model = swinUnet_p_3D(hidden_dim=96, layers=(2, 2, 6, 2), heads=(3, 6, 12, 24),
-                    window_size=window_size, in_channel=1, num_classes=64
-                    )
-
-
-
+    # #* the swinunet3d config
+    # x = torch.randn((1, 1, 224, 224, 160))
+    # window_size = [i // 32 for i in x.shape[2:]]
+    # model = swinUnet_p_3D(hidden_dim=96, layers=(2, 2, 6, 2), heads=(3, 6, 12, 24),
+    #                 window_size=window_size, in_channel=1, num_classes=64
+    #                 )
 
     model.cuda()
     model.load_state_dict(torch.load(model_path)['model'])
@@ -265,7 +269,7 @@ def test_crop(model_path, patch_size, overlap=15, confidence=0.15, iou_threshold
     step = [pahs - ovlap for pahs, ovlap in zip(patch_size, overlap)]
     no_pred_dia = []
     for name in tqdm(test_names):
-        image = tio.ScalarImage(f'D:\Work_file\det\data_seg_crop\\{name}_croplung.nii.gz')
+        image = tio.ScalarImage(f'/public_bme/data/xiongjl/det/nii_data_resample_seg_crop/{name}_croplung.nii.gz')
         image_data = image.data
         shape = image.shape[1:]
         image_patches = sliding_window_3d_volume_padded(image_data, patch_size=patch_size, stride=step)
@@ -273,7 +277,7 @@ def test_crop(model_path, patch_size, overlap=15, confidence=0.15, iou_threshold
         #* the image_patch is a list consist of the all patch of a whole image
         #* each element in the list is a dict consist of start point and tensor(input)
         label_xyz, label_whd = name2coord(name)
-        print(f'========================{name}========================')
+        # print(f'========================{name}========================')
         pred_bboxes = []
         for image_patch in image_patches:
             with torch.no_grad():
@@ -286,33 +290,136 @@ def test_crop(model_path, patch_size, overlap=15, confidence=0.15, iou_threshold
                 pred_hmap, pred_whd, pred_offset = model(image_input)
 
                 pred_bbox = decode_bbox(pred_hmap, pred_whd, pred_offset, scale, confidence, reduce=1., cuda=True, point=point)
-                if len(pred_bbox) > 0:
-                    pass
-                    # npy2nii(name, image_input, suffix=f'{order}-{len(pred_bbox)}-image.nii')
-                    # npy2nii(name, pred_hmap, suffix=f'{order}-{len(pred_bbox)}-hmap.nii')
+                # if len(pred_bbox) > 0:
+                #     pass
+                #     npy2nii(name, image_input, suffix=f'{order}-{len(pred_bbox)}-image.nii')
+                #     npy2nii(name, pred_hmap, suffix=f'{order}-{len(pred_bbox)}-hmap.nii')
                 pred_bboxes.append(pred_bbox)
 
         ground_truth_boxes = centerwhd_2nodes(centers=label_xyz, dimensions_list=label_whd, point=(0, 0, 0))
         
         # do the nms
         pred_bboxes = normal_list(pred_bboxes)
-        pred_bboxes = non_overlapping_boxes(pred_bboxes)
-        # pred_bboxes = nms(pred_bboxes, thres=0.5)
-        print(f'the gt bbox is {ground_truth_boxes}')
-        print(f'the pred bbox is {pred_bboxes}')
-        draw_boxes_on_nii(name, ground_truth_boxes, pred_bboxes)
-        no_predbox = filter_boxes(ground_truth_boxes, pred_bboxes)
-        no_pred_dia.extend(no_predbox)
+        # pred_bboxes = non_overlapping_boxes(pred_bboxes)
+        pred_bboxes = nms_(pred_bboxes, thres=0.5)
+        # print(f'the gt bbox is {ground_truth_boxes}')
+        # print(f'the pred bbox is {pred_bboxes}')
+        # draw_boxes_on_nii(name, ground_truth_boxes, pred_bboxes)
+        # no_predbox = filter_boxes(ground_truth_boxes, pred_bboxes)
+        # no_pred_dia.extend(no_predbox)
+
+        # * 生成这个seg的mask
+        # selected_box = select_box(pred_bboxes, 0.25)
+        # create_boxmask(ground_truth_boxes, selected_box, image_shape=shape, name=name)
+
         for bbox in pred_bboxes:
             hmap_score, x1, y1, z1, x2, y2, z2 = bbox
-            w = x2 - x1
-            h = y2 - y1
-            d = z2 - z1
-            with open(f'D:\Work_file\Object-Detection-Metrics-3D\samples\sample_2\detections\\{name}.txt', 'a') as f:
+            if not os.path.exists(f"det_file/{det_file}{model_path.split('/')[-1].split('.pt')[-2][8:]}/"):
+                os.makedirs(f"det_file/{det_file}{model_path.split('/')[-1].split('.pt')[-2][8:]}/")
+            with open(f"det_file/{det_file}{model_path.split('/')[-1].split('.pt')[-2][8:]}/{name}.txt", 'a') as f:
                 f.write(f'nodule {hmap_score} {x1} {y1} {z1} {x2} {y2} {z2} {shape}\n')
 
-    print(f'the no pred dia is {no_pred_dia}')
+    # print(f'the no pred dia is {no_pred_dia}')
+    # print(f'the confidence is {confidence}')
+    # print(f'the model path is {model_path}')
+    # print(f'the train_data is {train_data}')
     return print('Done')
+
+
+def create_gaussian_kernel_v3(whd):
+    size = int(np.mean(whd))
+    if size % 2 == 1:
+        size = 2 * size + 1
+    else:
+        size = 2 * size + 1
+    kernel = np.zeros((size, size, size))
+    center = tuple(s // 2 for s in (size, size, size))
+    kernel[center] = 1
+    if size // 6 <= 3:
+        sigma = 3
+    else:
+        sigma = size // 6
+    gassian_kernel = gaussian_filter(kernel, sigma=sigma)
+    arr_min = gassian_kernel.min()
+    arr_max = gassian_kernel.max()
+    normalized_arr = (gassian_kernel - arr_min) / (arr_max - arr_min)
+    return normalized_arr
+
+
+def place_kernel_on_image(kernel, image, position):
+    x, y, z = position
+    x_offset = kernel.shape[0] // 2
+    y_offset = kernel.shape[1] // 2
+    z_offset = kernel.shape[2] // 2
+    x_start = max(0, x - x_offset)
+    y_start = max(0, y - y_offset)
+    z_start = max(0, z - z_offset)
+    x_end = min(image.shape[0], x + x_offset + 1)
+    y_end = min(image.shape[1], y + y_offset + 1)
+    z_end = min(image.shape[2], z + z_offset + 1)
+
+    # 创建一个与图像大小相同的计数数组
+    count = np.zeros_like(image)
+    
+    # 在重叠位置增加计数
+    count[x_start:x_end, y_start:y_end, z_start:z_end] += 1
+    image[x_start:x_end, y_start:y_end, z_start:z_end] += kernel[x_start-x+x_offset:x_end-x+x_offset, y_start-y+y_offset:y_end-y+y_offset, z_start-z+z_offset:z_end-z+z_offset]
+    # 在重叠位置取平均值
+    image[x_start:x_end, y_start:y_end, z_start:z_end] /= count[x_start:x_end, y_start:y_end, z_start:z_end]
+    
+    return image
+
+
+def create_hmap_v3(coordinates, whds, shape): # 1.37s, if save :4.33s
+    arr = np.zeros(shape)
+    for i in range(len(coordinates)):
+        coord = [int(x) for x in coordinates[i]]
+        whd = [int(x) for x in whds[i]]
+        kernel = create_gaussian_kernel_v3(whd)
+        arr = place_kernel_on_image(kernel, image=arr, position=coord)
+
+    return arr
+
+
+
+
+
+
+
+
+def select_box(predbox, p):
+    selected_box = []
+    for box in predbox:
+        i = box[0]
+        if i >= p:
+            selected_box.append(box)
+    return selected_box
+
+
+def create_boxmask(gtbox, predbox, image_shape, name):
+    # 创建全零数组
+    mask = np.zeros(image_shape, dtype=np.uint8)
+    
+    # 将gtbox区域设置为1
+    for box in gtbox:
+        x1, y1, z1, x2, y2, z2 = map(int, box)
+        mask[z1:z2+1, y1:y2+1, x1:x2+1] = 1
+        
+    # 将predbox区域设置为2
+    for box in predbox:
+        x1, y1, z1, x2, y2, z2 = map(int, box[1:])
+        mask[z1:z2+1, y1:y2+1, x1:x2+1] += 2
+        
+    # 将重合区域设置为3
+    # mask[(mask == 1) & (mask == 2)] = 3
+    
+    # 转换为向量并增加维度
+    # mask_vector = mask.flatten()
+    mask_tensor = torch.tensor(mask, dtype=torch.uint8).unsqueeze(0)
+    affine = np.array([[0.7, 0, 0, 0], [0, 0.7, 0, 0], [0, 0, 1.2, 0], [0, 0, 0, 1]])
+    
+    mask_nii = tio.ScalarImage(tensor=mask_tensor, affine=affine)
+    mask_nii.save(f'/public_bme/data/xiongjl/det/nii_temp/{name}_boxmask.nii.gz')
 
 
 def normal_list(list):
@@ -324,6 +431,7 @@ def normal_list(list):
             for l in lit:
                 new_list.append(l)
     return new_list
+
 
 def filter_boxes(gt, pred):
     result = []
@@ -337,22 +445,8 @@ def filter_boxes(gt, pred):
             result.append(min(box[3]-box[0], box[4]-box[1], box[5]-box[2]))
     return result
 
-def non_overlapping_boxes(boxes):
-    non_overlapping = []
-    for i, box1 in enumerate(boxes):
-        overlapping = False
-        for j, box2 in enumerate(non_overlapping):
-            if boxes_overlap(box1, box2):
-                overlapping = True
-                if box_area(box1) > box_area(box2):
-                    non_overlapping.remove(box2)
-                    non_overlapping.append(box1)
-                break
-        if not overlapping:
-            non_overlapping.append(box1)
-    return non_overlapping
 
-def nms(dets, thres):
+def nms_(dets, thres):
     '''
     https://github.com/rbgirshick/py-faster-rcnn/blob/master/lib/nms/py_cpu_nms.py
     :param dets:  [[x1,y1,x2,y2,score], [x1,y1,x2,y2,score],,,]
@@ -380,9 +474,9 @@ def nms(dets, thres):
         zz1 = [max(z1[i], z1[j]) for j in order[1:]]
         zz2 = [min(z2[i], z2[j]) for j in order[1:]]
 
-        w = [max(xx2[i] - xx1[i] + 1.0, 0.0) for i in range(len(xx1))]
-        h = [max(yy2[i] - yy1[i] + 1.0, 0.0) for i in range(len(yy1))]
-        d = [max(zz2[i] - zz1[i] + 1.0, 0.0) for i in range(len(zz1))]
+        w = [max(xx2[i] - xx1[i], 0.0) for i in range(len(xx1))]
+        h = [max(yy2[i] - yy1[i], 0.0) for i in range(len(yy1))]
+        d = [max(zz2[i] - zz1[i], 0.0) for i in range(len(zz1))]
 
         inters = [w[i] * h[i] * d[i] for i in range(len(w))]
         unis = [areas[i] + areas[j] - inters[k] for k, j in enumerate(order[1:])]
@@ -399,22 +493,39 @@ def nms(dets, thres):
     return result
 
 
+def non_overlapping_boxes(boxes):
+    non_overlapping = []
+    for i, box1 in enumerate(boxes):
+        overlapping = False
+        for j, box2 in enumerate(non_overlapping):
+            if boxes_overlap(box1, box2):
+                overlapping = True
+                if box_area(box1) > box_area(box2):
+                    non_overlapping.remove(box2)
+                    non_overlapping.append(box1)
+                break
+        if not overlapping:
+            non_overlapping.append(box1)
+    return non_overlapping
+
+
 def boxes_overlap(box1, box2):
     x1, y1, z1, x2, y2, z2 = [np.float16(x) for x in box1[1:]]
     a1, b1, c1, a2, b2, c2 = [np.float16(x) for x in box2[1:]]
     return not (x2 < a1 or a2 < x1 or y2 < b1 or b2 < y1 or z2 < c1 or c2 < z1)
+
 
 def box_area(box):
     _, x1, y1, z1, x2, y2, z2 = box
     return (x2 - x1) * (y2 - y1) * (z2 - z1)
 
 
-def name2coord(mhd_name, root_dir='D:\Work_file\det'):
+def name2coord(mhd_name, root_dir='/public_bme/data/xiongjl/det/csv_file'):
     # * 输入name，输出这个name所对应着的gt坐标信息
     xyz = []
     whd = []
     # csv_file_dir = 'D:\\Work_file\\det_LUNA16_data\\annotations_pathcoord.csv'
-    csv_file_dir = os.path.join(root_dir, 'annotations_resmaple_segcrop_guanfang.csv')
+    csv_file_dir = os.path.join(root_dir, 'AT_afterlungcrop_guanfang.csv')
     with open(csv_file_dir, 'r') as file:
         reader = csv.reader(file)
         for row in reader:
@@ -440,7 +551,7 @@ def name2coord(mhd_name, root_dir='D:\Work_file\det'):
 from PIL import Image
 def draw_boxes_on_nii(name, ground_truth_boxes, predicted_boxes):
     # 将nii图像转换为numpy数组
-    nii_image = tio.ScalarImage(f'D:\Work_file\det\data_seg_crop\{name}_croplung.nii.gz')
+    nii_image = tio.ScalarImage(f'/public_bme/data/xiongjl/det/nii_data_resample_seg_crop/{name}_croplung.nii.gz')
     nii_image = nii_image.data.squeeze(0)
     nii_data = np.array(nii_image)
     nii_data_p = np.array(nii_image)
@@ -561,17 +672,25 @@ def draw_boxes_on_nii(name, ground_truth_boxes, predicted_boxes):
             
 
         # 保存合并后的图片
-    merged_image.save(os.path.join('D:\Work_file\det\image_data', f"{name[-9:]}.png"))
+    merged_image.save(os.path.join('/public_bme/data/xiongjl/det/image_result', f"{name}.png"))
 
 
 
 if __name__ == '__main__':
 
-
-    model_path = 'D:\Work_file\det\save\\best_model_swin3d_crop224160_0728-310.pt'
-    patch_size = [224, 224, 160]
+    model_path = [
+        ["/public_bme/data/xiongjl/det/save/0824_v3_res101_crop256_10-1-01_hmapv3-80.pt"],
+        ["/public_bme/data/xiongjl/det/save/0824_v3_res101_crop256_10-1-01_hmapv3-100.pt"],
+        ["/public_bme/data/xiongjl/det/save/0824_v3_res101_crop256_10-1-01_hmapv3-130.pt"],
+        ["/public_bme/data/xiongjl/det/save/0824_v3_res101_crop256_10-1-01_hmapv3-210.pt"],
+        ["/public_bme/data/xiongjl/det/save/0824_v3_res101_crop256_10-1-01_hmapv3-110.pt"],
+        ["/public_bme/data/xiongjl/det/save/0824_v3_res101_crop256_10-1-01_hmapv3-160.pt"],
+                    ]
+    # patch_size = [224, 224, 160]
+    patch_size = [256, 256, 256]
     overlap = [15, 15, 15]
-    test_crop(model_path, patch_size, overlap, confidence=0.15, iou_threshold=0.01)
+    for i in model_path:
+        test_crop(i[0], patch_size, overlap, train_data=False, confidence=0.05)
 
 
 

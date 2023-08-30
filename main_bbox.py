@@ -16,10 +16,8 @@ from IPython import embed
 from data.data_v1 import luna16Dataset
 import logging
 from time import time
-from model.swin_unet_v1 import SwinTransformerSys3D
-from model.hourglass_v1 import Hourglass
-from model.hourglass3d_ml import get_hourglass
-from model.swinunet3D_v1 import swinUnet_p_3D
+# from model.swin_unet_v1 import SwinTransformerSys3D
+from model.swinunet3d_v1 import swinUnet_p_3D
 os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3"
 # from utils import npy2nii
 

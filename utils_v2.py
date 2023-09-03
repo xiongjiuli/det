@@ -18,8 +18,8 @@ from time import time
 
 def name2coord(mhd_name, root_dir='/public_bme/data/xiongjl/det'):
     # * 输入name，输出这个name所对应着的gt坐标信息
-    xyz = []
-    whd = []
+    xyzwhd = []
+    # whd = []
     # csv_file_dir = 'D:\\Work_file\\det_LUNA16_data\\annotations_pathcoord.csv'
     csv_file_dir = os.path.join(root_dir, 'csv_file', 'AT_afterlungcrop_guanfang.csv')
     with open(csv_file_dir, 'r') as file:
@@ -35,10 +35,10 @@ def name2coord(mhd_name, root_dir='/public_bme/data/xiongjl/det'):
                 w = float(row[4]) 
                 h = float(row[5]) 
                 d = float(row[6]) 
-                xyz.append((x, y, z))
-                whd.append((w, h, d))
+                xyzwhd.append((x, y, z, w, h, d))
+                # whd.append((w, h, d))
     # print(f'xyz : {xyz}, whd : {whd}  in name2coord func')
-    return xyz, whd
+    return xyzwhd
 
 
 def crop_data(name, root_dir, new_shape, mode='train'):
@@ -132,19 +132,18 @@ def crop_data(name, root_dir, new_shape, mode='train'):
     if isinstance(image_crop, np.ndarray):
         image_crop = torch.from_numpy(image_crop)
 
-    dict = {}
-    dict['hmap'] = hmap
-    dict['offset'] = offset
-    dict['mask'] = mask
-    dict['input'] = image_crop
-    # dict['new_coords'] = new_coords
-    dict['name'] = name
-    # dict['origin_whd'] = origin_whd
-    # dict['origin_coords'] = origin_coords
-    dict['whd'] = whd
+    dct = {}
+    dct['hmap'] = hmap
+    dct['offset'] = offset
+    dct['mask'] = mask
+    dct['input'] = image_crop
+    # dct['new_coords'] = new_coords
+    dct['name'] = name
+    # dct['origin_whd'] = origin_whd
+    # dct['origin_coords'] = origin_coords
+    dct['whd'] = whd
 
-    return dict
-
+    return dct
 
 def random_crop_3d(name, crop_size, p=0.8, augmentatoin=False):
     path = '/public_bme/data/xiongjl/det/nii_data_resample_seg_crop/{}_croplung.nii.gz'.format(name)
@@ -152,7 +151,7 @@ def random_crop_3d(name, crop_size, p=0.8, augmentatoin=False):
     image = image.data[0, :, :, :]
 
     # new_shape = (crop_size, crop_size, crop_size)
-    origin_coords, origin_whd = name2coord(name)
+    origin_coords = name2coord(name)
     width, height, depth = image.shape[:]
 
     crop_width, crop_height, crop_depth = crop_size
@@ -168,7 +167,7 @@ def random_crop_3d(name, crop_size, p=0.8, augmentatoin=False):
     if random.random() < p:
         # 80% chance to have one or some points in the cropped image
         point = random.choice(origin_coords)
-        x, y, z = point
+        x, y, z = point[0:3]
         # 考虑到要是结束的范围比开始的范围要小的话就去强行变化范围
         x_sta = int(max(0, x - crop_width + 1))
         x_stop = int(min(x + 1, width - crop_width))
@@ -200,45 +199,46 @@ def random_crop_3d(name, crop_size, p=0.8, augmentatoin=False):
     
     cropped_image = image[x1:x2, y1:y2, z1:z2]
 
-    cropped_points = [(x-x1,y-y1,z-z1) for (x,y,z) in origin_coords if x1 <= x < x2 and y1 <= y < y2 and z1 <= z < z2]
+    cropped_points = [(x-x1,y-y1,z-z1,w,h,d) for (x,y,z,w,h,d) in origin_coords if x1 <= x < x2 and y1 <= y < y2 and z1 <= z < z2]
 
     if augmentatoin == True:
         if random.random() < 0.5:
             pass
         elif random.random() < 0.8:
-            cropped_image, cropped_points, origin_whd = rotate_img(cropped_image, cropped_points, origin_whd, rotation_range=(-15, 15))
-            cropped_points = [(x,y,z) for (x,y,z) in origin_coords if 0 <= x <= cropped_image.shape[0] and 0 <= y <= cropped_image.shape[1] and 0 <= z <= cropped_image.shape[2]]
+            cropped_image, cropped_points = rotate_img(cropped_image, cropped_points, rotation_range=(-15, 15))
+            cropped_points = [(x, y, z, w, h, d) for (x, y, z, w, h, d) in origin_coords if 0 <= x <= cropped_image.shape[0] and 0 <= y <= cropped_image.shape[1] and 0 <= z <= cropped_image.shape[2]]
         else:
             cropped_image = add_noise(cropped_image)
 
     #* bulid the other label
     mask = create_mask(cropped_points, crop_size, reduce=1) # 0.0s no save is so fast
-    whd = create_whd(coordinates=cropped_points, whd=origin_whd, shape=crop_size, reduce=1)
+    whd = create_whd(coordinates=cropped_points, shape=crop_size, reduce=1)
     offset = create_offset(coordinates=cropped_points, shape=crop_size, reduce=1)
     # hmap = create_hmap(coordinates=cropped_points, shape=crop_size, reduce=1)
-    # hmap = create_hmap_v2(coordinates=cropped_points, whds=origin_whd, shape=crop_size)
-    # hmap = create_hmap_v3(coordinates=cropped_points, whds=origin_whd, shape=crop_size)
-    # hmap = create_hmap_v4(coordinates=cropped_points, whds=origin_whd, shape=crop_size)
-    # hmap = create_hmap_v5(coordinates=cropped_points, whds=origin_whd, shape=crop_size)
-    hmap = create_hmap_v6(coordinates=cropped_points, whds=origin_whd, shape=crop_size)
-    
+    # hmap = create_hmap_v2(coordinates=cropped_points, shape=crop_size)
+    # hmap = create_hmap_v3(coordinates=cropped_points, shape=crop_size)
+    # hmap = create_hmap_v4(coordinates=cropped_points, shape=crop_size)
+    # hmap = create_hmap_v5(coordinates=cropped_points, shape=crop_size)
+    hmap = create_hmap_v6(coordinates=cropped_points, shape=crop_size)
+
+
     hmap = torch.from_numpy(hmap)
     offset = torch.from_numpy(offset)
     mask = torch.from_numpy(mask)
     whd = torch.from_numpy(whd)
     
-    dict = {}
-    dict['hmap'] = hmap
-    dict['offset'] = offset
-    dict['mask'] = mask
-    dict['input'] = cropped_image
-    dict['new_coords'] = cropped_points
-    dict['name'] = name
-    dict['origin_whd'] = origin_whd
-    dict['origin_coords'] = origin_coords
-    dict['whd'] = whd
+    dct = {}
+    dct['hmap'] = hmap
+    dct['offset'] = offset
+    dct['mask'] = mask
+    dct['input'] = cropped_image
+    dct['new_coords'] = cropped_points
+    dct['name'] = name
+    # dct['origin_whd'] = origin_whd
+    dct['origin_coords'] = origin_coords
+    dct['whd'] = whd
 
-    return dict
+    return dct
 
 
 def process_boxes(boxes, origin_whd, coord):
@@ -346,7 +346,7 @@ def create_mask(coordinates, shape, reduce=4, save=False, name=''):
     
     arr = np.zeros(tuple(np.array(shape) // reduce)) 
     for coord in coordinates:
-        x, y, z = coord
+        x, y, z = coord[0: 3]
         x = x / reduce
         y = y / reduce
         z = z / reduce 
@@ -357,17 +357,17 @@ def create_mask(coordinates, shape, reduce=4, save=False, name=''):
     return arr
 
 
-def create_whd(coordinates, whd, shape, reduce=4, save=False):
+def create_whd(coordinates, shape, reduce=4, save=False):
     
     arr = np.zeros(tuple(np.insert(np.array(shape) // reduce, 0, 3)))
     for i in range(len(coordinates)):
-        x, y, z = coordinates[i]
+        x, y, z, w, h, d = coordinates[i]
         x = x / reduce
         y = y / reduce
         z = z / reduce 
-        arr[0][int(x)][int(y)][int(z)] = whd[i][0]
-        arr[1][int(x)][int(y)][int(z)] = whd[i][1]
-        arr[2][int(x)][int(y)][int(z)] = whd[i][2]
+        arr[0][int(x)][int(y)][int(z)] = w
+        arr[1][int(x)][int(y)][int(z)] = h
+        arr[2][int(x)][int(y)][int(z)] = d
     if save:
         np.save('array.npy', arr)
     
@@ -377,7 +377,7 @@ def create_whd(coordinates, whd, shape, reduce=4, save=False):
 def create_offset(coordinates, shape, reduce=4, save=False):
     arr = np.zeros(tuple(np.insert(np.array(shape) // reduce, 0, 3)))
     for coord in coordinates:
-        x, y, z = coord
+        x, y, z = coord[0:3]
         x = x / reduce
         y = y / reduce
         z = z / reduce 
@@ -547,59 +547,60 @@ def place_kernel_on_image(kernel, image, position):
     return image
 
 
-def create_hmap_v2(coordinates, whds, shape): # 1.37s, if save :4.33s
+def create_hmap_v2(coordinates, shape): # 1.37s, if save :4.33s
     arr = np.zeros(shape)
-    for i in range(len(coordinates)):
-        coord = [int(x) for x in coordinates[i]]
-        whd = [int(x) for x in whds[i]]
+    for coords in coordinates:
+        coord = [int(x) for x in coords[0:3]]
+        whd = [int(x) for x in coords[3:6]]
         kernel = create_gaussian_kernel(whd)
         arr = place_kernel_on_image(kernel, image=arr, position=coord)
 
     return arr
 
 
-def create_hmap_v3(coordinates, whds, shape): # 1.37s, if save :4.33s
+def create_hmap_v3(coordinates, shape): # 1.37s, if save :4.33s
     arr = np.zeros(shape)
-    for i in range(len(coordinates)):
-        coord = [int(x) for x in coordinates[i]]
-        whd = [int(x) for x in whds[i]]
+    for coords in coordinates:
+        coord = [int(x) for x in coords[0:3]]
+        whd = [int(x) for x in coords[3:6]]
         kernel = create_gaussian_kernel_v3(whd)
         arr = place_kernel_on_image(kernel, image=arr, position=coord)
 
     return arr
 
 
-def create_hmap_v4(coordinates, whds, shape):
+def create_hmap_v4(coordinates, shape):
     arr = np.zeros(shape)
-    for i in range(len(coordinates)):
-        coord = [int(x) for x in coordinates[i]]
-        whd = [int(x) for x in whds[i]]
+    for coords in coordinates:
+        coord = [int(x) for x in coords[0:3]]
+        whd = [int(x) for x in coords[3:6]]
         kernel = create_gaussian_kernel_v4(whd)
         arr = place_kernel_on_image(kernel, image=arr, position=coord)
 
     return arr
 
 
-def create_hmap_v5(coordinates, whds, shape):
+def create_hmap_v5(coordinates, shape):
     arr = np.zeros(shape)
-    for i in range(len(coordinates)):
-        coord = [int(x) for x in coordinates[i]]
-        whd = [int(x) for x in whds[i]]
+    for coords in coordinates:
+        coord = [int(x) for x in coords[0:3]]
+        whd = [int(x) for x in coords[3:6]]
         kernel = create_gaussian_kernel_v5(whd)
         arr = place_kernel_on_image(kernel, image=arr, position=coord)
 
     return arr
 
 
-def create_hmap_v6(coordinates, whds, shape):
+def create_hmap_v6(coordinates, shape):
     arr = np.zeros(shape)
-    for i in range(len(coordinates)):
-        coord = [int(x) for x in coordinates[i]]
-        whd = [int(x) for x in whds[i]]
+    for coords in coordinates:
+        coord = [int(x) for x in coords[0:3]]
+        whd = [int(x) for x in coords[3:6]]
         kernel = create_gaussian_kernel_v6(whd)
         arr = place_kernel_on_image(kernel, image=arr, position=coord)
 
     return arr
+
 
 
 def rotate_coords(coordss, angle, center):

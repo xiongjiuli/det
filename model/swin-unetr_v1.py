@@ -343,7 +343,7 @@ class SwinUNETR(nn.Module):
                 weights["state_dict"]["module.layers4.0.downsample.norm.bias"]
             )
 
-    def forward(self, x_in):
+    def forward(self, x_in, layer):
         
         hidden_states_out = self.swinViT(x_in, self.normalize)
         enc0 = self.encoder1(x_in)
@@ -352,13 +352,38 @@ class SwinUNETR(nn.Module):
         enc3 = self.encoder4(hidden_states_out[2])
         dec4 = self.encoder10(hidden_states_out[4])
         dec3 = self.decoder5(dec4, hidden_states_out[3])
-        dec2 = self.decoder4(dec3, enc3)
-        dec1 = self.decoder3(dec2, enc2)
-        dec0 = self.decoder2(dec1, enc1)
-        out = self.decoder1(dec0, enc0)
-        logits = self.out(out)
+        dec2 = self.decoder4(dec3, enc3) # torch.Size([1, 192, h/8, w/8, d/8])
+        dec1 = self.decoder3(dec2, enc2) # torch.Size([1, 96, h/4, w/4, d/4])
+        dec0 = self.decoder2(dec1, enc1) # torch.Size([1, 48, h/2, w/2, d/2])
+        out = self.decoder1(dec0, enc0) # torch.Size([1, 48, h, w, d])
+        logits = self.out(out) # torch.Size([1, 7, h, w, d])
         logits = self.head(logits)
-        return logits
+
+        if layer == -2:
+            convdec0 = nn.Conv3d(48, 7, kernel_size=1, stride=1, padding=0)
+            dec0_output = convdec0(dec0) # torch.Size([1, 1, h/2, w/2, d/2])
+            dec0_hamp = F.interpolate(dec0_output, scale_factor=2, mode='trilinear', align_corners=True)
+            dec0_hamp = self.head(dec0_hamp)
+            return dec0_hamp
+
+        elif layer == -3:
+            convdec1 = nn.Conv3d(96, 7, kernel_size=1, stride=1, padding=0)
+            dec1_output = convdec1(dec1) # torch.Size([1, 1, h/4, w/4, d/4])
+            dec1_hamp = F.interpolate(dec1_output, scale_factor=4, mode='trilinear', align_corners=True)
+            dec1_hamp = self.head(dec1_hamp)
+            return dec1_hamp
+
+        elif layer == -4:
+            convdec2 = nn.Conv3d(192, 7, kernel_size=1, stride=1, padding=0)
+            dec2_output = convdec2(dec2) # torch.Size([1, 1, h/8, w/8, d/8])
+            dec2_hamp = F.interpolate(dec2_output, scale_factor=8, mode='trilinear', align_corners=True)
+            dec2_hamp = self.head(dec2_hamp)
+            return dec2_hamp
+        
+        elif layer == -1:
+            return logits
+        else:
+            print('the layer parameter should be given')
 
 
 def window_partition(x, window_size):

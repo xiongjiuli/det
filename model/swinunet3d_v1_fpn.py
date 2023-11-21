@@ -5,7 +5,7 @@ from einops.layers.torch import Rearrange
 from typing import Union, List
 import numpy as np
 from timm.models.layers import trunc_normal_
-
+import torch.nn.functional as F
 
 class CyclicShift3D(nn.Module):
     def __init__(self, displacement):
@@ -516,26 +516,36 @@ class SwinUnet3D(nn.Module):
         assert y_s % (y_ws * 32) == 0, f'y轴上的尺寸必须能被y_window_size*32 整除'
         assert z_s % (z_ws * 32) == 0, f'y轴上的尺寸必须能被z_window_size*32 整除'
 
-        down12_1 = self.enc12(img)  # (B,C, X//4, Y//4, Z//4)
-        down3 = self.enc3(down12_1)  # (B, 2C,X//8, Y//8, Z//8)
-        down4 = self.enc4(down3)  # (B, 4C,X//16, Y//16, Z//16)
-        features = self.enc5(down4)  # (B, 8C,X//32, Y//32, Z//32)
+        down12_1 = self.enc12(img)  # (B, C, X//4, Y//4, Z//4)
+        down3 = self.enc3(down12_1)  # (B, 2C, X//8, Y//8, Z//8)
+        down4 = self.enc4(down3)  # (B, 4C, X//16, Y//16, Z//16)
+        features = self.enc5(down4)  # (B, 8C, X//32, Y//32, Z//32)
 
         up4 = self.dec4(features)  # (B, 8C, X//16, Y//16, Z//16 )
         # up1和 down3融合
         up4 = self.converge4(up4, down4)  # (B, 4C, X//16, Y//16, Z//16)
-        
+        # print(f'up4 shape is {up4.shape}')
         up3 = self.dec3(up4)  # ((B, 2C,X//8, Y//8, Z//8)
         # up2和 down2融合
-        up3 = self.converge3(up3, down3)  # (B,2C, X//8, Y//8)
-  
+        up3 = self.converge3(up3, down3)  # (B, 2C, X//8, Y//8)
+        # print(f'up3 shape is {up3.shape}')
         up12 = self.dec12(up3)  # (B,C, X//4, Y//4, Z// 4)
         # up3和 down1融合
         up12 = self.converge12(up12, down12_1)  # (B,C, X//4, Y//4, Z//4)
+        # print(f'up12 shape is {up12.shape}')
+        # out = self.final(up12)  # (B, num_classes, X, Y, Z) 
+        # print(f'out shape is {out.shape}')
+        # out = self.out(out)
+        # print(f'finish out shape is {out.shape}')
 
-        out = self.final(up12)  # (B,num_classes, X, Y, Z)
-        out = self.out(out)
-        return self.head(out)
+
+        up12_dec = nn.Conv3d(96, 64, kernel_size=1, stride=1, padding=0)
+        up12_small = up12_dec(up12) # torch.Size([b, 64, h/4, w/4, d/4])
+        up12_hmap = F.interpolate(up12_small, scale_factor=4, mode='trilinear', align_corners=True) # torch.Size([b, 64, h, w, d])
+
+        return self.head(up12_hmap)
+
+
 
     def init_weight(self):
         for m in self.modules():
@@ -556,7 +566,7 @@ def swinUnet_p_3D(hidden_dim=96, layers=(2, 2, 4, 2), heads=(3, 6, 9, 12), num_c
 from torchkeras import summary
 
 if __name__ == '__main__':
-    x = torch.randn((1, 1, 224, 224, 160))
+    x = torch.randn((1, 1, 160, 160, 160))
     window_size = [i // 32 for i in x.shape[2:]]
     seg = swinUnet_p_3D(hidden_dim=96, layers=(2, 2, 6, 2), heads=(3, 6, 12, 24),
                         window_size=window_size, in_channel=1, num_classes=64
